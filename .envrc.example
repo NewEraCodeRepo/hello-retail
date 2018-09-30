@@ -1,0 +1,5 @@
+export STAGE=retailstage
+export AWS_PROFILE=admin
+export REGION=us-east-1
+export COMPANY=nordstrom
+export TEAM=retaildevs

@@ -1,0 +1,85 @@
+frameworkVersion: '>=1.0.0 <2.0.0'
+
+service: ${self:custom.helloRetail.name}-cart-api
+
+custom:
+  stage: ${opt:stage, self:provider.stage, self:custom.private.stage}
+  private: ${file(./private.yml)}
+  helloRetail: ${file(./helloRetail.yml)}
+  retailStreamVersion: 1
+  retailStream: ${file(./retail-stream.yml)}
+  cartBuilderVersion: 1
+  cartBuilder: ${file(../builder/serverless.yml)}
+  cartApiVersion: 1
+  productCatalogBuilderVersion: 1 # The version of this service to depend upon
+  productCatalogBuilder: ${file(./product-catalog.yml)}
+
+provider:
+  name: aws
+  deploymentBucket: ${self:custom.helloRetail.deploymentBucket}
+  runtime: nodejs4.3
+  profile: ${self:custom.private.profile}
+  region: ${self:custom.private.region}
+
+functions:
+  products:
+    role:
+      Fn::GetAtt: [ CartApiProductsReader, Arn ]
+    handler: cartApi.products
+    environment:
+      TABLE_CART_NAME:
+        Fn::ImportValue: ${self:custom.cartBuilder.custom.exportCartTableName}
+    events:
+      - http:
+          path: products
+          method: get
+          cors: true
+
+resources:
+  Resources:
+    ProductsLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:custom.stage}-products
+        RetentionInDays: 7
+    CartApiProductsReader: # role for Products Lambda
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /
+        RoleName: ${self:custom.stage}CartApiProductsReader${self:custom.cartApiVersion}
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Principal:
+                Service: lambda.amazonaws.com
+        ManagedPolicyArns:
+          - ${self:custom.private.teamPolicy}
+        Policies:
+          - PolicyName: CreateAndWriteToLogStream #TODO What should this be??
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'logs:CreateLogStream'
+                  Resource:
+                    Fn::GetAtt: [ ProductsLogGroup, Arn ]
+                - Effect: Allow
+                  Action:
+                    - 'logs:PutLogEvents'
+                  Resource:
+                    Fn::Join:
+                      - ':'
+                      - - Fn::GetAtt: [ ProductsLogGroup, Arn ]
+                        - '*'
+          - PolicyName: ReadFromProducts #TODO what should this be??
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                -  Effect: Allow
+                   Action:
+                     - 'dynamodb:Query'
+                   Resource:
+                    Fn::ImportValue: ${self:custom.productCatalogBuilder.custom.exportProductCatalogTableCategoryIndexArn} #TODO what do i do with this

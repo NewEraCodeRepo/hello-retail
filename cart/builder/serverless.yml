@@ -1,0 +1,142 @@
+frameworkVersion: '>=1.0.0 <2.0.0'
+
+service: ${self:custom.helloRetail.name}-cart-builder
+
+custom:
+  stage: ${opt:stage, self:provider.stage, self:custom.private.stage}
+  private: ${file(./private.yml)}
+  helloRetail: ${file(./helloRetail.yml)}
+  retailStreamVersion: 1
+  retailStream: ${file(./retail-stream.yml)}
+  cartBuilder: ${self:}
+  # Exports
+  exportCartTableName: ${self:custom.cartBuilder.service}:${self:custom.stage}:CartTableName
+  exportCartTableArn: ${self:custom.cartBuilder.service}:${self:custom.stage}:CartTableArn
+
+provider:
+  name: aws
+  deploymentBucket: ${self:custom.helloRetail.deploymentBucket}
+  runtime: nodejs4.3
+  profile: ${self:custom.private.profile}
+  region: ${self:custom.private.region}
+
+functions:
+  cart:
+    role:
+      Fn::GetAtt: [ CartBuilder, Arn ]
+    handler: cart.processKinesisEvent
+    environment:
+      TABLE_CART_NAME:
+        Ref: Cart
+    events:
+      - stream:
+          arn: 'arn:aws:kinesis:${self:provider.region}:${self:custom.private.accountId}:stream/${self:custom.stage}RetailStream'
+          enabled: true
+          startingPosition: TRIM_HORIZON
+
+resources:
+  Resources:
+    # Log Group
+    CartLogGroup:
+      Type: AWS::Logs::LogGroup
+      Properties:
+        LogGroupName: /aws/lambda/${self:service}-${self:custom.stage}-cart
+        RetentionInDays: 7
+    # Cart Table
+    Cart:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: productId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: productId
+            KeyType: RANGE
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TableName: ${self:custom.stage}-Cart
+    # Cart Roles
+    CartBuilder: # role for the Cart Lambda
+      Type: AWS::IAM::Role
+      Properties:
+        Path: /
+        RoleName: ${self:custom.stage}CartBuilder
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Principal:
+                AWS: # role ARNs that are allowed to write to the Cart
+                  - 'arn:aws:iam::${self:custom.private.accountId}:role/${self:custom.private.teamRole}'
+            - Effect: Allow
+              Action: sts:AssumeRole
+              Principal:
+                Service: lambda.amazonaws.com
+        ManagedPolicyArns:
+          - ${self:custom.private.teamPolicy}
+        Policies:
+          - PolicyName: CreateAndWriteToLogStream
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'logs:CreateLogStream'
+                  Resource:
+                    Fn::GetAtt: [ CartLogGroup, Arn ]
+                - Effect: Allow
+                  Action:
+                    - 'logs:PutLogEvents'
+                  Resource:
+                    Fn::Join:
+                      - ':'
+                      - - Fn::GetAtt: [ CartLogGroup, Arn ]
+                        - '*'
+          - PolicyName: ReadFromKinesis
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'kinesis:GetRecords'
+                    - 'kinesis:GetShardIterator'
+                    - 'kinesis:DescribeStream'
+                    - 'kinesis:ListStreams'
+                  Resource:
+                    Fn::ImportValue: ${self:custom.retailStream.custom.exportRetailStreamArn}
+          - PolicyName: WriteToCart
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                -  Effect: Allow
+                   Action:
+                     - 'dynamodb:UpdateItem'
+                     - 'dynamodb:DeleteItem'
+                   Resource:
+                    Fn::Join:
+                      - '/'
+                      - - 'arn:aws:dynamodb:${self:provider.region}:${self:custom.private.accountId}:table'
+                        - Ref: Cart
+
+  Outputs:
+    CartTableName:
+      Description: The Name of the Cart Table
+      Value:
+        Ref: Cart
+      Export:
+        Name: ${self:custom.cartBuilder.custom.exportCartTableName}
+    CartTableArn:
+      Description: The ARN for the Cart Table
+      Value:
+        Fn::Join:
+          - '/'
+          - - 'arn:aws:dynamodb:${self:provider.region}:${self:custom.private.accountId}:table'
+            - Ref: Cart
+      Export:
+        Name: ${self:custom.cartBuilder.custom.exportCartTableArn}
